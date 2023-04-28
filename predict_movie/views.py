@@ -36,6 +36,9 @@ values = dict()
 values['a'] = 10
 values['b'] = 20
 
+moviedDictionay = dict()
+
+
 # # @require_POST
 # def index(request):
 #     print("hello")
@@ -58,6 +61,27 @@ values['b'] = 20
 #     return HttpResponse("this is post request")
 
 # Register User API
+
+# movie_data = {}
+
+# def makeRequest(query, index): 
+#   # print(query)
+#   print(index)
+#   url = 'https://api.themoviedb.org/3/search/movie'
+#   api_key = 'cb261bed9d6fb20d553f67a15b21840e'
+#   # query = 'The Godfather'
+
+#   params = {'api_key': api_key, 'language': 'en-US', 'query': query, 'page': 1, 'include_adult': False}
+#   response = requests.get(url, params=params)
+#   movie = response.json()
+#   if(len(movie['results']) != 0):
+#     movie_data[query] = movie['results'][0]
+
+#   print(movie_data.keys())
+# #   print('https://image.tmdb.org/t/p/original' + movie['results'][0]['poster_path'] if (len(movie['results']) != 0 and movie['results'][0]['poster_path']) else "https://image.tmdb.org/t/p/original/uXDfjJbdP4ijW5hWSBrPrlKpxab.jpg")
+#   return 'https://image.tmdb.org/t/p/original' + movie['results'][0]['poster_path'] if (len(movie['results']) != 0 and movie['results'][0]['poster_path']) else "https://image.tmdb.org/t/p/original/uXDfjJbdP4ijW5hWSBrPrlKpxab.jpg"
+
+
 
 # A Sample class with init method
 class CreateModel:
@@ -123,6 +147,19 @@ class CreateModel:
         self.smd = self.smd.reset_index()
         self.titles = self.smd['title']
         self.indices = pd.Series(self.smd.index, index=self.smd['title'])
+        # titles = self.smd['original_title'].values
+        # idx = 0
+        # for title in titles:
+        #     makeRequest(title, idx)
+        #     idx += 1
+
+        # filename = "movie_data.json"
+
+        # with open(filename, "w") as json_file:
+        #     # Dump the dictionary into the JSON file
+        #     json.dump(movie_data, json_file)
+        
+
 
     def get_recommendations(self, title):
         idx = self.indices[title]
@@ -136,7 +173,25 @@ class CreateModel:
             movie_dict = {}
             movie_dict['title'] = row['title']
             recommendations.append(movie_dict)
-        return json.dumps(recommendations)
+        
+        data = []
+
+        # Open the JSON file for reading
+        with open('movie_data.json', 'r') as file:
+            # Load the JSON data from the file into a dictionary
+            data = json.load(file)
+
+        newRecommendedMovies = []
+        for obj in recommendations:
+            print(obj)
+            if obj['title'] in data:
+                newRecommendedMovies.append(data[obj['title']])
+
+        print(newRecommendedMovies)
+        # for movie in recommendations:
+        #     movie['url'] = moviedDictionay(movie['title'])
+
+        return json.dumps(newRecommendedMovies)
         
 movieRecommendationModel = CreateModel()
 
@@ -188,6 +243,7 @@ def getData(table_name):
         else:
             # all items have been retrieved
             break
+        print(len(finalArr))
         
     # for item in finalArr:
     #     for key, value in item.items():
@@ -202,7 +258,7 @@ class PredictMovie(APIView):
         reqData = request.data
 
         recommendedMovies = movieRecommendationModel.get_recommendations(reqData['movieName'])
-        response = getData('credits')
-        print(response)
-        print(recommendedMovies)
+        # response = getData('movies_metadata')
+        # print(response)
+        
         return Response(recommendedMovies)
