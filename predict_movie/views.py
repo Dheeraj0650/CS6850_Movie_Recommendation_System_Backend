@@ -4,6 +4,8 @@ from django.http import JsonResponse
 from django.views.decorators.http import require_POST
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
+from scipy.sparse import csr_matrix
+from fuzzywuzzy import process
 # from bson.json_util import dumps
 from rest_framework.views import APIView
 from rest_framework.exceptions import AuthenticationFailed
@@ -17,6 +19,7 @@ from scipy import stats
 from ast import literal_eval
 from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
 from sklearn.metrics.pairwise import linear_kernel, cosine_similarity
+from sklearn.neighbors import NearestNeighbors
 from nltk.stem.snowball import SnowballStemmer
 from nltk.stem.wordnet import WordNetLemmatizer
 from nltk.corpus import wordnet
@@ -28,177 +31,6 @@ import boto3
 import csv
 from io import StringIO
 
-dynamodb = boto3.client("dynamodb", region_name="us-west-1")
-s3 = boto3.client("s3")
-
-# Create your views here.
-values = dict()
-values['a'] = 10
-values['b'] = 20
-
-moviedDictionay = dict()
-
-
-# # @require_POST
-# def index(request):
-#     print("hello")
-#     print(request)
-#     print("bye")
-    
-#     if request.method == 'POST':
-#         # Handle the POST request
-#         data = request.POST.get('data');
-#         print(data)
-#         # Do something with the data
-#         response_data = {'success': True}
-#         return JsonResponse(response_data)
-#     else:
-#         return HttpResponse(values.items())
-    
-
-# def handlePost(request):
-#     print("hey")
-#     return HttpResponse("this is post request")
-
-# Register User API
-
-# movie_data = {}
-
-# def makeRequest(query, index): 
-#   # print(query)
-#   print(index)
-#   url = 'https://api.themoviedb.org/3/search/movie'
-#   api_key = 'cb261bed9d6fb20d553f67a15b21840e'
-#   # query = 'The Godfather'
-
-#   params = {'api_key': api_key, 'language': 'en-US', 'query': query, 'page': 1, 'include_adult': False}
-#   response = requests.get(url, params=params)
-#   movie = response.json()
-#   if(len(movie['results']) != 0):
-#     movie_data[query] = movie['results'][0]
-
-#   print(movie_data.keys())
-# #   print('https://image.tmdb.org/t/p/original' + movie['results'][0]['poster_path'] if (len(movie['results']) != 0 and movie['results'][0]['poster_path']) else "https://image.tmdb.org/t/p/original/uXDfjJbdP4ijW5hWSBrPrlKpxab.jpg")
-#   return 'https://image.tmdb.org/t/p/original' + movie['results'][0]['poster_path'] if (len(movie['results']) != 0 and movie['results'][0]['poster_path']) else "https://image.tmdb.org/t/p/original/uXDfjJbdP4ijW5hWSBrPrlKpxab.jpg"
-
-
-
-# A Sample class with init method
-class CreateModel:
-    # init method or constructor
-    def __init__(self):
-        self.md = pd.read_csv('./movies_metadata.csv')
-        self.md['genres'] = self.md['genres'].fillna('[]').apply(literal_eval).apply(lambda x: [i['name'] for i in x] if isinstance(x, list) else [])
-        self.vote_counts = self.md[self.md['vote_count'].notnull()]['vote_count'].astype('int')
-        self.vote_averages = self.md[self.md['vote_average'].notnull()]['vote_average'].astype('int')
-        self.C = self.vote_averages.mean()
-        self.m = self.vote_counts.quantile(0.95)
-        self.md['year'] = pd.to_datetime(self.md['release_date'], errors='coerce').apply(lambda x: str(x).split('-')[0] if x != np.nan else np.nan)
-        self.qualified = self.md[(self.md['vote_count'] >= self.m) & (self.md['vote_count'].notnull()) & (self.md['vote_average'].notnull())][['title', 'year', 'vote_count', 'vote_average', 'popularity', 'genres']]
-        self.qualified['vote_count'] = self.qualified['vote_count'].astype('int')
-        self.qualified['vote_average'] = self.qualified['vote_average'].astype('int')
-
-        def weighted_rating(x):
-            self.v = x['vote_count']
-            self.R = x['vote_average']
-            return (self.v/(self.v+self.m) * self.R) + (self.m/(self.m+self.v) * self.C)
-        
-        self.qualified['wr'] = self.qualified.apply(weighted_rating, axis=1)
-        
-        self.qualified = self.qualified.sort_values('wr', ascending=False).head(250)
-
-        self.s = self.md.apply(lambda x: pd.Series(x['genres']),axis=1).stack().reset_index(level=1, drop=True)
-        self.s.name = 'genre'
-        self.gen_md = self.md.drop('genres', axis=1).join(self.s)
-
-        def build_chart(genre, percentile=0.85):
-            self.df = self.gen_md[self.gen_md['genre'] == genre]
-            self.vote_counts = self.df[self.df['vote_count'].notnull()]['vote_count'].astype('int')
-            vote_averages = self.df[self.df['vote_average'].notnull()]['vote_average'].astype('int')
-            self.C = self.vote_averages.mean()
-            self.m = self.vote_counts.quantile(percentile)
-            
-            self.qualified = self.df[(self.df['vote_count'] >= self.m) & (self.df['vote_count'].notnull()) & (self.df['vote_average'].notnull())][['title', 'year', 'vote_count', 'vote_average', 'popularity']]
-            self.qualified['vote_count'] = self.qualified['vote_count'].astype('int')
-            self.qualified['vote_average'] = self.qualified['vote_average'].astype('int')
-            
-            self.qualified['wr'] = self.qualified.apply(lambda x: (x['vote_count']/(x['vote_count']+self.m) * x['vote_average']) + (self.m/(self.m+x['vote_count']) * self.C), axis=1)
-            self.qualified = self.qualified.sort_values('wr', ascending=False).head(250)
-            
-            return self.qualified
-        
-        self.links_small = pd.read_csv('links_small.csv')
-        self.links_small = self.links_small[self.links_small['tmdbId'].notnull()]['tmdbId'].astype('int')
-
-        self.md = self.md.drop([19730, 29503, 35587])
-
-        self.md['id'] = self.md['id'].astype('int')
-        self.smd = self.md[self.md['id'].isin(self.links_small)]
-
-        self.smd['tagline'] = self.smd['tagline'].fillna('')
-        self.smd['description'] = self.smd['overview'] + self.smd['tagline']
-        self.smd['description'] = self.smd['description'].fillna('')
-
-        self.tf = TfidfVectorizer(analyzer='word',ngram_range=(1, 2),min_df=0, stop_words='english')
-        self.tfidf_matrix = self.tf.fit_transform(self.smd['description'])
-
-        self.cosine_sim = linear_kernel(self.tfidf_matrix, self.tfidf_matrix)
-
-        self.smd = self.smd.reset_index()
-        self.titles = self.smd['title']
-        self.indices = pd.Series(self.smd.index, index=self.smd['title'])
-        # titles = self.smd['original_title'].values
-        # idx = 0
-        # for title in titles:
-        #     makeRequest(title, idx)
-        #     idx += 1
-
-        # filename = "movie_data.json"
-
-        # with open(filename, "w") as json_file:
-        #     # Dump the dictionary into the JSON file
-        #     json.dump(movie_data, json_file)
-        
-
-
-    def get_recommendations(self, title):
-        idx = self.indices[title]
-        sim_scores = list(enumerate(self.cosine_sim[idx]))
-        sim_scores = sorted(sim_scores, key=lambda x: x[1], reverse=True)
-        sim_scores = sim_scores[1:31]
-        movie_indices = [i[0] for i in sim_scores]
-        movie_info = self.titles.iloc[movie_indices]
-        recommendations = []
-        for index, row in movie_info.to_frame().iterrows():
-            movie_dict = {}
-            movie_dict['title'] = row['title']
-            recommendations.append(movie_dict)
-        
-        data = []
-
-        # Open the JSON file for reading
-        with open('movie_data.json', 'r') as file:
-            # Load the JSON data from the file into a dictionary
-            data = json.load(file)
-
-        newRecommendedMovies = []
-        for obj in recommendations:
-            print(obj)
-            if obj['title'] in data:
-                newRecommendedMovies.append(data[obj['title']])
-
-        print(newRecommendedMovies)
-        # for movie in recommendations:
-        #     movie['url'] = moviedDictionay(movie['title'])
-
-        return json.dumps(newRecommendedMovies)
-        
-movieRecommendationModel = CreateModel()
-
-class IndexView(APIView):
-    def post(self, request):
-        return Response(values)
-
 
 def weighted_rating(x, m, C):
     v = x['vote_count']
@@ -208,8 +40,8 @@ def weighted_rating(x, m, C):
 def getFileFromS3(file_name):
     bucket_name = 'movierecommendationsystem'
     s3_response = s3.get_object(Bucket=bucket_name, Key=file_name)
-    file_data = s3_response ["Body"].read().decode('utf')
-    return csv_string_to_dict(file_data)
+    file_data = s3_response ["Body"].read()
+    return json.loads(file_data)
 
 def csv_string_to_dict(csv_string):
     result = []
@@ -219,12 +51,10 @@ def csv_string_to_dict(csv_string):
     return result
 
 def getData(table_name):
-    # set up the initial parameters for the scan operation
     scan_params = {
         'TableName': table_name
     }
     
-    # initiate the scan operation
     response = dynamodb.scan(**scan_params)
     
     finalArr = []
@@ -234,31 +64,351 @@ def getData(table_name):
         for item in items:
             finalArr.append(item)
             
-        # check if there are more items to retrieve
         if 'LastEvaluatedKey' in response:
-            # set the exclusive start key to the last evaluated key
             scan_params['ExclusiveStartKey'] = response['LastEvaluatedKey']
-            # initiate another scan operation
             response = dynamodb.scan(**scan_params)
         else:
-            # all items have been retrieved
             break
-        print(len(finalArr))
         
-    # for item in finalArr:
-    #     for key, value in item.items():
-    #         item[key] = value.get(list(value.keys())[0])
-    
     return finalArr
+    
+dynamodb = boto3.client("dynamodb", region_name="us-west-1")
+s3 = boto3.client("s3", region_name="us-west-1")
+
+# data = getData("final_merged_movies")
+# data = getData("final_merged_movies")
+# data = getData("final_merged_movies")
+# data = getData("final_merged_movies")
+# data = getData("final_merged_movies")
+# converted_data = []
+# for item in data:
+#     new_item = {}
+#     for key, value in item.items():
+#         new_item[key] = next(iter(value.values()))
+#         if isinstance(new_item[key], str) and new_item[key].replace('.', '').isdigit():
+#             new_item[key] = float(new_item[key])
+#         elif isinstance(new_item[key], str) and new_item[key].isdigit():
+#             new_item[key] = int(new_item[key])
+#     converted_data.append(new_item)
+
+# print(converted_data)
+# movies_df = pd.DataFrame(converted_data)
+
+
+merged_movie_data = getFileFromS3("merged_movie_data.json")
+movie_data = getFileFromS3("movie_data.json")
+
+
+movies_df = pd.read_csv('final_merged_movies.csv')
+movies_df['Rating_Score'] = movies_df['Rating_Score'].astype(float)
+movies_df['Total_Votes'] = movies_df['Total_Votes'].astype(float)
+# movies_df['Gross_USA'] = movies_df['Gross_USA'].astype(float)
+# movies_df['Movie_Name'] = movies_df['Movie_Name'].astype(str)
+# movies_df['Movie_Genre'] = movies_df['Movie_Genre'].astype(str)
+# movies_df['Cast'] = movies_df['Cast'].astype(str)
+# movies_df['overview'] = movies_df['overview'].astype(str)
+# movies_df['keywords'] = movies_df['keywords'].astype(str)
+movies_df['weighted_rating'] = ((movies_df['Rating_Score'] * movies_df['Total_Votes']) / (movies_df['Total_Votes'].sum()))
+
+# Create your views here.
+
+class SimpleRecommender:
+    def __init__(self):
+        pass
+
+    def recommend_movies_by_genre(self, genre, top_n=10):
+        movies_by_genre = movies_df[movies_df['Movie_Genre'].str.contains(genre)]
+        movie_info = movies_by_genre.sort_values(['Gross_USA', 'weighted_rating'], ascending=False).head(top_n)
+        movie_info = movie_info[['Movie_Name']].values.tolist()
+        # data = []
+
+        # # Open the JSON file for reading
+        # with open('merged_movie_data.json', 'r') as file:
+        #     # Load the JSON data from the file into a dictionary
+        #     data = json.load(file)
+
+        newRecommendedMovies = []
+        for obj in movie_info:
+            if obj[0] in merged_movie_data:
+                newRecommendedMovies.append(merged_movie_data[obj[0]])
+
+        return newRecommendedMovies
+
+
+# A Sample class with init method
+class CreateC_TF_IDFModel:
+    # init method or constructor
+    def __init__(self):
+        
+        movies_df['Cast'] = movies_df['Cast'].apply(lambda x: ' '.join(x.split(',')[:20]))
+        movies_df['Movie_Genre'] = movies_df['Movie_Genre'].str.replace(',', ' ') # Replace commas with spaces
+        self.tfidf = TfidfVectorizer(stop_words='english')
+
+        movies_df['Movie_Genre'] = movies_df['Movie_Genre'].fillna('')
+
+        self.tfidf_matrix = self.tfidf.fit_transform(movies_df['Movie_Name'] + ' ' + movies_df['Movie_Genre'] + ' ' + movies_df['Cast'] + ' ' + movies_df['overview'] + ' ' + movies_df['keywords'])
+
+        self.cosine_sim = cosine_similarity(self.tfidf_matrix, self.tfidf_matrix)
+        
+
+
+    def get_recommendations(self, title):
+        indices = pd.Series(movies_df.index, index=movies_df['Movie_Name']).drop_duplicates()
+        idx = int(indices[title])
+
+        sim_scores = list(enumerate(self.cosine_sim[idx]))
+
+        rating_scores = [float(score) for score in movies_df['Rating_Score']]
+
+        weighted_scores = [(i, sim_scores[i][1] * rating_scores[i]) for i in range(len(sim_scores))]
+
+        weighted_scores = sorted(weighted_scores, key=lambda x: x[1], reverse=True)
+
+        movie_indices = [i[0] for i in weighted_scores[1:20]]
+
+        movie_info = movies_df[['Movie_Name', 'weighted_rating']].iloc[movie_indices].sort_values(by='weighted_rating', ascending=False)
+        movie_info = movie_info[['Movie_Name']].values.tolist()
+        
+        # data = {}
+
+        # # Open the JSON file for reading
+        # with open('merged_movie_data.json', 'r') as file:
+        #     # Load the JSON data from the file into a dictionary
+        #     data = json.load(file)
+
+        newRecommendedMovies = []
+        for movie in movie_info:
+            if movie[0] in merged_movie_data:
+                newRecommendedMovies.append(merged_movie_data[movie[0]])
+
+        return json.dumps(newRecommendedMovies)
+    
+class CreateC_Count_VecModel:
+    # init method or constructor
+    def __init__(self):
+        self.count_vec = CountVectorizer(stop_words='english')
+        movies_df['Movie_Genre'] = movies_df['Movie_Genre'].fillna('')
+        tfidf = TfidfVectorizer(stop_words='english')
+        count_matrix = tfidf.fit_transform(movies_df['Movie_Name'] + ' ' + movies_df['Movie_Genre'] + ' ' + movies_df['Cast'] + ' ' + movies_df['overview'] + ' ' + movies_df['keywords'])
+
+        self.cosine_sim = cosine_similarity(count_matrix, count_matrix)
+
+
+    def get_recommendations(self, title):
+        indices = pd.Series(movies_df.index, index=movies_df['Movie_Name']).drop_duplicates()
+        
+        idx = int(indices[title])
+
+        sim_scores = list(enumerate(self.cosine_sim[idx]))
+
+        rating_scores = [float(score) for score in movies_df['Rating_Score']]
+
+        weighted_scores = [(i, sim_scores[i][1] * rating_scores[i]) for i in range(len(sim_scores))]
+
+        weighted_scores = sorted(weighted_scores, key=lambda x: x[1], reverse=True)
+
+        movie_indices = [i[0] for i in weighted_scores[1:20]]
+
+        movie_info = movies_df[['Movie_Name', 'weighted_rating']].iloc[movie_indices].sort_values(by='weighted_rating', ascending=False)
+        movie_info = movie_info[['Movie_Name']].values.tolist()
+        
+        # data = {}
+
+        # # Open the JSON file for reading
+        # with open('merged_movie_data.json', 'r') as file:
+        #     # Load the JSON data from the file into a dictionary
+        #     data = json.load(file)
+
+        newRecommendedMovies = []
+        for movie in movie_info:
+            if movie[0] in merged_movie_data:
+                newRecommendedMovies.append(merged_movie_data[movie[0]])
+
+
+        return json.dumps(newRecommendedMovies)
+ 
+class CreateKNN_TF_IDFModel:
+    # init method or constructor
+    def __init__(self):
+        tfidf = TfidfVectorizer(stop_words='english')
+
+        movies_df['Movie_Genre'] = movies_df['Movie_Genre'].fillna('')
+
+        self.tfidf_matrix = tfidf.fit_transform(movies_df['Movie_Name'] + ' ' + movies_df['Movie_Genre'] + ' ' + movies_df['Cast'] + ' ' + movies_df['overview'] + ' ' + movies_df['keywords'])
+
+        self.knn = NearestNeighbors(n_neighbors=21, algorithm='brute', metric='cosine')
+        self.knn.fit(self.tfidf_matrix)
+
+    def get_recommendations(self, title):
+        indices = pd.Series(movies_df.index, index=movies_df['Movie_Name']).drop_duplicates()
+        idx = int(indices[title])
+
+        distances, indices = self.knn.kneighbors(self.tfidf_matrix[idx])
+
+        movie_indices = indices[0][1:21]
+
+        movie_info = movies_df[['Movie_Name', 'weighted_rating']].iloc[movie_indices].sort_values(by='weighted_rating', ascending=False)
+        movie_info = movie_info[['Movie_Name']].values.tolist()
+        
+        # data = {}
+
+        # # Open the JSON file for reading
+        # with open('merged_movie_data.json', 'r') as file:
+        #     # Load the JSON data from the file into a dictionary
+        #     data = json.load(file)
+
+        newRecommendedMovies = []
+        for movie in movie_info:
+            if movie[0] in merged_movie_data:
+                newRecommendedMovies.append(merged_movie_data[movie[0]])
+
+
+        return json.dumps(newRecommendedMovies)
+
+class CreateKNN_Count_VecModel:
+    # init method or constructor
+    def __init__(self):
+        count = CountVectorizer(stop_words='english')
+        movies_df['Movie_Genre'] = movies_df['Movie_Genre'].fillna('')
+        self.count_matrix = count.fit_transform(movies_df['Movie_Name'] + ' ' + movies_df['Movie_Genre'] + ' ' + movies_df['Cast'] + ' ' + movies_df['overview'] + ' ' + movies_df['keywords'])
+        self.knn = NearestNeighbors(n_neighbors=21, algorithm='brute', metric='cosine')
+        self.knn.fit(self.count_matrix)
+        
+    def get_recommendations(self, title):
+        indices = pd.Series(movies_df.index, index=movies_df['Movie_Name']).drop_duplicates()
+        idx = int(indices[title])
+
+        distances, indices = self.knn.kneighbors(self.count_matrix[idx])
+
+        movie_indices = indices[0][1:21]
+
+        movie_info = movies_df[['Movie_Name', 'weighted_rating']].iloc[movie_indices].sort_values(by='weighted_rating', ascending=False)
+        movie_info = movie_info[['Movie_Name']].values.tolist()
+        
+        # data = {}
+
+        # # Open the JSON file for reading
+        # with open('merged_movie_data.json', 'r') as file:
+        #     # Load the JSON data from the file into a dictionary
+        #     data = json.load(file)
+
+        newRecommendedMovies = []
+        for movie in movie_info:
+            if movie[0] in merged_movie_data:
+                newRecommendedMovies.append(merged_movie_data[movie[0]])
+
+        return json.dumps(newRecommendedMovies)
+
+class CreateCollaborativeFilteringModel:
+    # init method or constructor
+    def __init__(self):
+        ratings = pd.read_csv('ratings_small.csv')
+        credits = pd.read_csv('credits.csv')
+        keywords = pd.read_csv('keywords.csv')
+        movie_names = pd.read_csv('movies_metadata.csv').drop(['belongs_to_collection', 'homepage', 'imdb_id', 'poster_path', 'status', 'title', 'video'], axis=1).drop([19730, 29503, 35587])
+        
+        ratings = ratings.drop('timestamp', axis = 1)
+
+        movie_names = movie_names.rename(columns={'original_title': 'title'})
+        self.movie_names = movie_names[['title', 'genres']]
+
+        movie_data = pd.concat([ratings, self.movie_names], axis=1)
+
+        pattern = pd.DataFrame(movie_data.groupby('title')['rating'].mean())
+        pattern['total number of ratings'] = pd.DataFrame(movie_data.groupby('title')['rating'].count())
+
+        pivot = ratings.pivot(index=['userId'], columns=['movieId'], values='rating').fillna(0)
+
+        self.mat=csr_matrix(pivot.values)
+
+        self.knn= NearestNeighbors(metric='cosine', algorithm='brute', n_neighbors=20, n_jobs=-1)
+        self.knn.fit(self.mat)
+    
+    def get_recommendations(self, input):
+        i = process.extractOne(input, self.movie_names['title'])[2]
+        d, i = self.knn.kneighbors(self.mat[i], n_neighbors=21)
+        rmi = sorted(list(zip(i.squeeze().tolist(),d.squeeze().tolist())),key=lambda x: x[1])[:0:-1]
+        l = []
+        for val in rmi:
+            l.append({'Title':self.movie_names['title'][val[0]],'Distance':val[1]})
+        results = pd.DataFrame(l, index = range(1,21))
+        movie_info = results[['Title']].values.tolist()
+
+        # data = {}
+
+        # # Open the JSON file for reading
+        # with open('movie_data.json', 'r') as file:
+        #     # Load the JSON data from the file into a dictionary
+        #     data = json.load(file)
+
+        newRecommendedMovies = []
+        for movie in movie_info:
+            if movie[0] in movie_data:
+                newRecommendedMovies.append(movie_data[movie[0]])
+
+        return json.dumps(newRecommendedMovies)
+        
+movieRecommendationModel1 = CreateC_TF_IDFModel()
+movieRecommendationModel2 = CreateC_Count_VecModel()
+movieRecommendationModel3 = CreateKNN_TF_IDFModel()
+movieRecommendationModel4 = CreateKNN_Count_VecModel()
+movieRecommendationModel5 = CreateCollaborativeFilteringModel()
+
+
+simpleRecommenderModel = SimpleRecommender()
+
+class IndexView(APIView):
+    def post(self, request):
+        return Response(values)
 
 class PredictMovie(APIView):
     def post(self, request):
-        values['a'] = 40
-        values['b'] = 50
         reqData = request.data
+        predictBy = reqData['predictBy'].strip()
+        method = reqData['method'].strip()
+        
+        recommendedMovies = {}
 
-        recommendedMovies = movieRecommendationModel.get_recommendations(reqData['movieName'])
+        if method == "CONTENT BASED":
+            if predictBy == "COSINE AND TF-IDF":
+                recommendedMovies = movieRecommendationModel1.get_recommendations(reqData['movieName'])
+            elif predictBy == "COSINE AND COUNT VEC":
+                recommendedMovies = movieRecommendationModel2.get_recommendations(reqData['movieName'])
+            elif predictBy == "KNN AND TF-IDF":
+                recommendedMovies = movieRecommendationModel3.get_recommendations(reqData['movieName'])
+            elif predictBy == "KNN AND COUNT VEC":
+                recommendedMovies = movieRecommendationModel4.get_recommendations(reqData['movieName'])
+        elif method == "COLLABORATIVE":
+            print("innnnnnn")
+            recommendedMovies = movieRecommendationModel5.get_recommendations(reqData['inputData'])
+
+
+        # input = ["Toy Story", "Jumanji", "Dracula: Dead and Loving It", "Sabrina", "Forbidden Planet", "Dead Man Walking"]
+        # data = {}
+
+        # # Open the JSON file for reading
+        # with open('movie_data.json', 'r') as file:
+        #     # Load the JSON data from the file into a dictionary
+        #     data = json.load(file)
+
+        # newRecommendedMovies = []
+        # for movie in input:
+        #     if movie in data:
+        #         newRecommendedMovies.append(data[movie])
+        # print(newRecommendedMovies)
         # response = getData('movies_metadata')
         # print(response)
         
         return Response(recommendedMovies)
+    
+class MovieByGenre(APIView):
+    def post(self, request):
+
+        genre = ["Action","Sci-Fi", "Mystery", "Crime", "Drama", "Thriller", "Romance"]
+        
+        genreDictionary = []
+
+        for val in genre:
+            genreDictionary.append([val, simpleRecommenderModel.recommend_movies_by_genre(val)])
+        
+        return Response(json.dumps(genreDictionary))
